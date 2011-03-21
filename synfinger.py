@@ -12,19 +12,66 @@ import scipy.ndimage.filters as filt
 import math
 import random
 from mpl_toolkits.mplot3d import axes3d
-from ImgUtils import ImgUtils
+from ImgUtils import scaleImg, binarize
+import uuid
 #import scipy.stsci.convolve as convolve
 
+import psyco
+psyco.full()
 
-class SynFinger(ImgUtils):
+class SynFinger:
   """
   Generates a synthetic finger master image according to the SFINGE method. 
   Additional parameters added to simulate rolled prints.
   """
   
-  def __init__(self):
-    pass
-
+  def __init__(self, size=(640,640), type=None, plotResult=False, fname=None):
+    #Returnable values for DB
+    self.size = size
+    self.core = []
+    self.singularpoints = []
+    self.type = type
+    self.image = []
+    self.orientationmap = []
+    
+    #Generate image size then plot singular points for Henry type
+    mask = np.ones(self.size, dtype=np.int)
+    ls, ds = self.makeSingularPts(mask, self.type)
+    
+    #Determine core point as midpoint between two loop singularities or the position of the loop
+    if ls.ndim > 1:
+      self.core = np.average(ls, axis=0)
+    else:
+      self.core = np.array(ls)
+    
+    #Generate orientation map
+    orientMap = self.makeOrientationMap(ls, ds, mask, self.type)
+    self.orientationmap = np.array(orientMap)
+    
+    #Gabor filter to generate grayscale image, then binarize for master image
+    masterImage = self.gaborFilter(orientMap)
+    masterImage = binarize(masterImage)
+    self.image = np.array(masterImage)
+    
+    if fname:
+      self.makeImage(masterImage,filename=fname)
+    
+    if plotResult:
+      plt.figure()
+      plt.imshow(masterImage, cmap=cm.gray)
+      
+      plt.plot(ls[:,1], ls[:,0],'o')
+      plt.plot(ds[:,1], ds[:,0],'^')
+      plt.plot(self.core[1], self.core[0], 'r*')
+      
+      #numRows, numCols = np.shape(orientMap)
+      #for r in range(0,numRows,3):
+          #for c in range(0,numCols,3):
+              #plt.plot([c,c+2.0*math.cos(orientMap[r][c])],[r,r+2.0*math.sin(orientMap[r][c])],'g-')
+      plt.show()
+    
+    
+      
   def genMask(self,a1,a2,b1,b2,c,d=0):
     """
     Generates a finger foreground mask with a center rectangle dxc (WxH) and
@@ -81,60 +128,113 @@ class SynFinger(ImgUtils):
         """
         numRows,numCols = np.shape(mask)
         if not type:
-            type = random.choice(('Arch','Left Loop','Right Loop','Tented Arch','Whorl'))
+            type = random.choice(('Left Loop','Right Loop','Whorl','Tented Arch'))
+        
         if type == 'Arch':
             # Put a loop below mask area FIXME: This doesn't work (maybe some kind of gaussian?)
-            ls=[(random.randint(numRows,2*numRows),random.randint(.2*numCols,.8*numCols))]
-            ds=[]
+            #ls=[random.randint(numRows,2*numRows),random.randint(.2*numCols,.8*numCols)]
+            ls=[random.randint(int(.4*numRows),int(.6*numRows)),random.randint(int(.4*numCols),int(.6*numCols))]
+            #ds=[ls[0]+numRows, ls[1]]
+            ds = ls
+        
         elif type == 'Left Loop':
             # Put one loop in top half of fingeprint, center +/- 10% 
-            ls=[(random.randint(int(.4*numRows),int(.6*numRows)),random.randint(int(.4*numCols),int(.6*numCols)))]
+            ls=[random.randint(int(.4*numRows),int(.6*numRows)),random.randint(int(.4*numCols),int(.6*numCols))]
             # Find maximum distance to edge of fingerprint, put 1 delta at random
             # angle in correct quadrant
-            dsOffDist=random.uniform(.2,.7)*math.sqrt((numRows-ls[0][0])**2+(numCols-ls[0][1])**2)
+            dsOffDist=random.uniform(.2,.7)*math.sqrt((numRows-ls[0])**2+(numCols-ls[1])**2)
             dsOffAngle=random.uniform(math.pi/8.0,3.0*math.pi/8.0)
-            ds=[(ls[0][0]+int(dsOffDist*math.sin(dsOffAngle)),ls[0][1]+int(dsOffDist*math.cos(dsOffAngle)))]
+            ds=[ls[0]+int(dsOffDist*math.sin(dsOffAngle)),ls[1]+int(dsOffDist*math.cos(dsOffAngle))]
+
         elif type == 'Right Loop':
             # Put one loop in top half of fingeprint, center +/- 20% 
-            ls=[(random.randint(int(.4*numRows),int(.6*numRows)),random.randint(int(.4*numCols),int(.6*numCols)))]
-            # Find  offset distance (40-90% to edge of fingerprint), put 1 delta at random
+            ls=[random.randint(int(.4*numRows),int(.6*numRows)),random.randint(int(.4*numCols),int(.6*numCols))]
+            # Find  offset distance (20-70% to edge of fingerprint), put 1 delta at random
             # angle in correct quadrant
-            dsOffDist=random.uniform(.2,.7)*math.sqrt((numRows-ls[0][0])**2+(ls[0][1])**2)
+            dsOffDist=random.uniform(.2,.7)*math.sqrt((numRows-ls[0])**2+(ls[1])**2)
             dsOffAngle=random.uniform(math.pi/8.0,3.0*math.pi/8.0)+math.pi/2.0
-            ds=[(ls[0][0]+int(dsOffDist*math.sin(dsOffAngle)),ls[0][1]+int(dsOffDist*math.cos(dsOffAngle)))]
+            ds=[ls[0]+int(dsOffDist*math.sin(dsOffAngle)),ls[1]+int(dsOffDist*math.cos(dsOffAngle))]
+        
         elif type == 'Tented Arch':
-            pass
+            ls=[random.randint(int(.4*numRows),int(.6*numRows)),random.randint(int(.4*numCols),int(.6*numCols))]
+            ds=[ls[0]+random.randint(10,numRows-ls[0])-1, ls[1]]
+
         elif type == 'Whorl':
-            pass
+            ls1, ds1 = self.makeSingularPts(mask, type='Right Loop')
+            ls2, ds2 = self.makeSingularPts(mask, type='Left Loop')
+            ls = [ls1, ls2]
+            ds = [ds1, ds2]
+
         else:
             assert false, 'Invalid Fingerprint Type'
         
+        ls = np.array(ls)
+        ds = np.array(ds)
         return(ls, ds)
 
-  def makeOrientationMap(self,ls,ds,mask):
+  def makeOrientationMap(self,ls,ds,mask,type=None):
         """
         Generates an orientation map based on the Henry class of fingerprint
         """
+        
         numRows, numCols = np.shape(mask)
         orientMap = np.zeros((numRows,numCols),dtype='float')
         
-        # Calculate the Sherlock-Munro Model with Vizcaya-Gerhardt Correction TODO: V-G Correction
+        # Calculate the Sherlock-Munro Model with Vizcaya-Gerhardt Correction
         # Signs reversed due to way rows are indexed in Python
-        L=8
-        g_alpha_i=[-1*math.pi+2*math.pi*i/L for i in range(0,L)]
-        for r in range(0,numRows):
-            for c in range(0,numCols):
-                Z_ds=np.sum([math.atan2((r-ds[i][0]),(c-ds[i][1])) for i in range(0,len(ds))])
-                Z_ls=np.sum([math.atan2((r-ls[i][0]),(c-ls[i][1])) for i in range(0,len(ls))])
-                orientMap[r,c]=0.5*(Z_ls-Z_ds)
+        
+        if ds.ndim > 1:
+            for r in range(0,numRows):
+                for c in range(0,numCols):
+                    Z_ds=np.sum([self.gAlpha(math.atan2((r-ds[i][0]),(c-ds[i][1]))) for i in range(0,len(ds))])
+                    Z_ls=np.sum([self.gAlpha(math.atan2((r-ls[i][0]),(c-ls[i][1]))) for i in range(0,len(ls))])
+                    orientMap[r,c]=0.5*(Z_ls-Z_ds)
+        else:
+            for r in range(0,numRows):
+                for c in range(0,numCols):
+                    Z_ds=np.sum([self.gAlpha(math.atan2((r-ds[0]),(c-ds[1])))])
+                    Z_ls=np.sum([self.gAlpha(math.atan2((r-ls[0]),(c-ls[1])))])
+                    orientMap[r,c]=0.5*(Z_ls-Z_ds)
+
         return orientMap
         
+  def gAlpha(self,a):
+    """
+    Helper function for the Vizcaya-Gerhardt correction to the orientation map
+    """
+    if a > math.pi: a = a - 2.0*math.pi
+    
+    a_axis = np.linspace(-math.pi, math.pi, num =9, endpoint = True)
+    gA = np.linspace(-math.pi, math.pi, num = 9, endpoint = True)
+    #type = 'Right Loop'
+    #if type == 'Right Loop':          
+      #gA[4] -= math.pi/3.0
+      #gA[3] -= math.pi*2.0/9.0
+      #gA[5] -= math.pi*2.0/9.0
+    #if type == 'Left Loop':
+      #gA[4] += math.pi/3.0
+      #gA[3] += math.pi*2.0/9.0
+      #gA[5] += math.pi*2.0/9.0
+    
+    g_ai = max(gA[a_axis<=a])
+    try:
+      g_aip1 = min(gA[a_axis>a])
+    except Exception:
+      return max(gA)
+    g_diff = g_aip1 - g_ai
+    a_diff = a - max(a_axis[a_axis<=a])
+    gk_alpha = g_ai + a_diff/(2.0*math.pi/8)*g_diff
+    
+    #print a, gk_alpha
+    return gk_alpha
+    
+  
   def gaborFilter(self,orientMap):
         """
         Applies Gabor filters to generate a ridge structure based on local orientation
         """
         numRows, numCols = np.shape(orientMap)
-        masterImage=np.zeros((numRows,numCols),dtype='float')
+        masterImage = np.zeros((numRows,numCols),dtype='float')
         
         # Create a spatially varying frequency response
         # Uses a tukey window to lower freq above/below singular pts
@@ -151,7 +251,7 @@ class SynFinger(ImgUtils):
             spatialFreq[r]=spatialFreq[r]+tukey[r]
 
 
-        for n in range(1,1000):
+        for n in range(1,4000):
             print n
             # Seed with N initial points, keeping them inside filter overlap boundary 
             # so no edge effects during inital seeding
@@ -171,8 +271,6 @@ class SynFinger(ImgUtils):
             # Do Monte Carlo sampling of N points, applying Gabor filter at
             # at each point
             for i in range(0,N):
-                #f=1/6.0 #TODO: implement spatially varying frequency
-                #sig = 4.0 #TODO: calculate sigma based on local freq
                 th = orientMap[seedPointsR[i],seedPointsC[i]]-math.pi/2.0
 
                 r = seedPointsR[i]
@@ -180,8 +278,9 @@ class SynFinger(ImgUtils):
                 
                 f = 1.0 / spatialFreq[r,c]
                 sig = -1.0 * (3.0/(2.0*f))**2 / math.log(10.0**(-3)) / 2.0
-
+                
                 filtCoef=[[math.exp(-1.0*(float(x)**2+float(y)**2)/(2.0*sig))*math.cos(2.0*math.pi*f*(float(x)*math.cos(th)+float(y)*math.sin(th))) for x in range(-filtSize/2,filtSize/2)] for y in range(-filtSize/2,filtSize/2)]
+
                 filtCoef=np.array(filtCoef)
                            
                 fs2=filtSize/2
@@ -209,9 +308,8 @@ class SynFinger(ImgUtils):
                 f = 1.0 / spatialFreq[r,c]
                 sig = -1.0 * (3.0/(2.0*f))**2 / math.log(10.0**(-3)) / 2.0
 
-
                 filtCoef=[[math.exp(-1.0*(float(x)**2+float(y)**2)/(2.0*sig))*math.cos(2.0*math.pi*f*(float(x)*math.cos(th)+float(y)*math.sin(th))) for x in range(-filtSize/2,filtSize/2)] for y in range(-filtSize/2,filtSize/2)]
-                    
+                
                 filtCoef=np.array(filtCoef)
                            
                 fs2=filtSize/2
@@ -230,8 +328,8 @@ class SynFinger(ImgUtils):
                 masterImage[r-fs2:r+fs2,c-fs2:c+fs2]=testVar
 
         # Moving average filter to get rid of windowing effects            
-        masterImage = spsig.fftconvolve(masterImage,np.ones((2,2),dtype='float'),mode='same')
-        masterImage = ImgUtils.scaleImg(self, masterImage)
+        masterImage = spsig.fftconvolve(masterImage,np.ones((4,4),dtype='float'),mode='same')
+        masterImage = scaleImg(masterImage)
         return masterImage
 
   def applyMask(self,thresImage,mask):
@@ -242,36 +340,49 @@ class SynFinger(ImgUtils):
         maskImage[np.where(mask == 0)] = 255
         return maskImage
 
+  def makeImage(self, maskImage, filename=None):
+        """
+        Takes image as NP array and converts to TIF format
+        """
+        if not filename:
+            filename = uuid.uuid4()
 
-finger = SynFinger()
-mask = finger.genMask(100,120,120,110,70,d=0)
-ls,ds = finger.makeSingularPts(mask, 'Right Loop')
-orientMap = finger.makeOrientationMap(ls,ds,mask)
-masterImage = finger.gaborFilter(orientMap)
-threshImage = finger.binarize(masterImage)
-maskImage = finger.applyMask(threshImage,mask)
-print np.shape(maskImage)
+        numRows, numCols = np.shape(maskImage)
+        im = Image.new("L",(numCols,numRows),255)
+        for r in range(0,numRows):
+            for c in range(0,numCols):
+                im.im.putpixel((c,r),maskImage[r,c])
+        im.save(filename)
+     
+if __name__ == '__main__':
+  SynFinger(size=(640,640),type='Whorl',plotResult=True)
+  
+#finger = SynFinger()
+#mask = finger.genMask(100,120,120,110,70,d=0)
+#ls,ds = finger.makeSingularPts(mask, 'Right Loop')
+#orientMap = finger.makeOrientationMap(ls,ds,mask, 'Right Loop')
+#masterImage = finger.gaborFilter(orientMap)
+#threshImage = finger.binarize(masterImage)
+##maskImage = finger.applyMask(threshImage,mask)
+#maskImage = threshImage
+#print np.shape(maskImage)
 
-numRows, numCols = np.shape(maskImage)
-im = Image.new("L",(numCols,numRows),255)
-for r in range(0,numRows):
-    for c in range(0,numCols):
-        im.im.putpixel((c,r),maskImage[r,c])
+#finger.makeImage(maskImage, filename='test.tif')
 
-im.save('test.tif')
-
-#print np.max(masterImage),np.min(masterImage)
 #plt.figure()
-plt.imshow(maskImage, cmap=cm.gray)
+#plt.imshow(maskImage, cmap=cm.gray)
 
-plt.plot([r[1] for r in ls],[y[0] for y in ls],'o')
-plt.plot([r[1] for r in ds],[y[0] for y in ds],'^')
-#numRows, numCols = np.shape(orientMap)
-#for r in range(0,numRows,3):
-#    for c in range(0,numCols,3):
-#        plt.plot([c,c+2.0*math.cos(orientMap[r][c])],[r,r+2.0*math.sin(orientMap[r][c])],'g-')
+##plt.plot([r[1] for r in ls],[y[0] for y in ls],'o')
+#plt.plot(ls[:,1], ls[:,0],'o')
+#plt.plot(ds[:,1], ds[:,0],'^')
+
+##plt.plot([r[1] for r in ds],[y[0] for y in ds],'^')
+##numRows, numCols = np.shape(orientMap)
+##for r in range(0,numRows,3):
+##    for c in range(0,numCols,3):
+##        plt.plot([c,c+2.0*math.cos(orientMap[r][c])],[r,r+2.0*math.sin(orientMap[r][c])],'g-')
         
 
 
-plt.show()
+#plt.show()
 
