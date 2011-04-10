@@ -16,36 +16,64 @@ from ImgUtils import scaleImg, binarize
 import uuid
 #import scipy.stsci.convolve as convolve
 
-import psyco
-psyco.full()
+ 
 
 class SynFinger:
   """
   Generates a synthetic finger master image according to the SFINGE method. 
   Additional parameters added to simulate rolled prints.
+  Returns dictionary:
+      image: nd-array
+      size: (row,col) tuple
+      core: nd-array
+      singularpoints: {ls: nd-array, ds: nd-array}
+      henry: string
+      orientationmap: nd-array
   """
   
-  def __init__(self, size=(640,640), type=None, plotResult=False, fname=None):
+  def __init__(self, remoteDebug=False):
+    
+    if remoteDebug:
+      try:
+        import wingdbstub
+      except ImportError:
+        assert False, 'Could not load remote dubugger module. Aborting.'
+    
     #Returnable values for DB
-    self.size = size
+    self.size = None
     self.core = []
     self.singularpoints = []
-    self.type = type
+    self.henry = ''
     self.image = []
     self.orientationmap = []
     
-    #Generate image size then plot singular points for Henry type
+  def make_master(self, size=(640,640), henry=None, plotResult=False, fname=None, returnValue=False):
+    
+    self.size = size
+    self.henry = henry
+   
+    #Generate image size then create singular points for Henry type
     mask = np.ones(self.size, dtype=np.int)
-    ls, ds = self.makeSingularPts(mask, self.type)
+    ls, ds = self.makeSingularPts(mask, self.henry)
+    
+    if self.henry != 'Whorl': #see makeSingularPts return comment for why you have to do this here
+      ls = [ls]
+      ds = [ds]
+    ls = np.array(ls)
+    ds = np.array(ds)
+    
+    self.singularpoints = {'ls': ls, 'ds': ds}
+    print ls, ds
+    print self.singularpoints
     
     #Determine core point as midpoint between two loop singularities or the position of the loop
     if ls.ndim > 1:
       self.core = np.average(ls, axis=0)
     else:
-      self.core = np.array(ls)
+      self.core = ls
     
     #Generate orientation map
-    orientMap = self.makeOrientationMap(ls, ds, mask, self.type)
+    orientMap = self.makeOrientationMap(ls, ds, mask, self.henry)
     self.orientationmap = np.array(orientMap)
     
     #Gabor filter to generate grayscale image, then binarize for master image
@@ -60,8 +88,10 @@ class SynFinger:
       plt.figure()
       plt.imshow(masterImage, cmap=cm.gray)
       
-      plt.plot(ls[:,1], ls[:,0],'o')
-      plt.plot(ds[:,1], ds[:,0],'^')
+      for ls1 in ls:
+        plt.plot(ls1[1], ls1[0],'o')
+      for ds1 in ds:
+        plt.plot(ds1[1], ds1[0],'^')
       plt.plot(self.core[1], self.core[0], 'r*')
       
       #numRows, numCols = np.shape(orientMap)
@@ -69,6 +99,10 @@ class SynFinger:
           #for c in range(0,numCols,3):
               #plt.plot([c,c+2.0*math.cos(orientMap[r][c])],[r,r+2.0*math.sin(orientMap[r][c])],'g-')
       plt.show()
+    
+    if returnValue:
+      return_dict = {'image': self.image,'size': self.size, 'core': self.core, 'singularpoints': self.singularpoints, 'orientationmap': self.orientationmap, 'henry': self.henry}
+      
     
     
       
@@ -122,22 +156,24 @@ class SynFinger:
 
     return mask
 
-  def makeSingularPts(self, mask, type=None):
+  def makeSingularPts(self, mask, henry=None):
         """
         Creates loop and delta points based on the Henry class (randomized placement)
         """
         numRows,numCols = np.shape(mask)
-        if not type:
-            type = random.choice(('Left Loop','Right Loop','Whorl','Tented Arch'))
+        if not henry:
+            henry = random.choice(('Left Loop','Right Loop','Whorl','Tented Arch'))
         
-        if type == 'Arch':
+        if henry == 'Arch':
             # Put a loop below mask area FIXME: This doesn't work (maybe some kind of gaussian?)
             #ls=[random.randint(numRows,2*numRows),random.randint(.2*numCols,.8*numCols)]
             ls=[random.randint(int(.4*numRows),int(.6*numRows)),random.randint(int(.4*numCols),int(.6*numCols))]
             #ds=[ls[0]+numRows, ls[1]]
             ds = ls
+            #ls=[ls]
+            #ds=[ds]
         
-        elif type == 'Left Loop':
+        elif henry == 'Left Loop':
             # Put one loop in top half of fingeprint, center +/- 10% 
             ls=[random.randint(int(.4*numRows),int(.6*numRows)),random.randint(int(.4*numCols),int(.6*numCols))]
             # Find maximum distance to edge of fingerprint, put 1 delta at random
@@ -145,8 +181,10 @@ class SynFinger:
             dsOffDist=random.uniform(.2,.7)*math.sqrt((numRows-ls[0])**2+(numCols-ls[1])**2)
             dsOffAngle=random.uniform(math.pi/8.0,3.0*math.pi/8.0)
             ds=[ls[0]+int(dsOffDist*math.sin(dsOffAngle)),ls[1]+int(dsOffDist*math.cos(dsOffAngle))]
-
-        elif type == 'Right Loop':
+            #ls=[ls]
+            #ds=[ds]
+            
+        elif henry == 'Right Loop':
             # Put one loop in top half of fingeprint, center +/- 20% 
             ls=[random.randint(int(.4*numRows),int(.6*numRows)),random.randint(int(.4*numCols),int(.6*numCols))]
             # Find  offset distance (20-70% to edge of fingerprint), put 1 delta at random
@@ -154,25 +192,30 @@ class SynFinger:
             dsOffDist=random.uniform(.2,.7)*math.sqrt((numRows-ls[0])**2+(ls[1])**2)
             dsOffAngle=random.uniform(math.pi/8.0,3.0*math.pi/8.0)+math.pi/2.0
             ds=[ls[0]+int(dsOffDist*math.sin(dsOffAngle)),ls[1]+int(dsOffDist*math.cos(dsOffAngle))]
-        
-        elif type == 'Tented Arch':
+            #ls=[ls]
+            #ds=[ds]
+            
+        elif henry == 'Tented Arch':
             ls=[random.randint(int(.4*numRows),int(.6*numRows)),random.randint(int(.4*numCols),int(.6*numCols))]
             ds=[ls[0]+random.randint(10,numRows-ls[0])-1, ls[1]]
+            #ls=[ls]
+            #ds=[ds]
 
-        elif type == 'Whorl':
-            ls1, ds1 = self.makeSingularPts(mask, type='Right Loop')
-            ls2, ds2 = self.makeSingularPts(mask, type='Left Loop')
+        elif henry == 'Whorl':
+            ls1, ds1 = self.makeSingularPts(mask, henry='Right Loop')
+            ls2, ds2 = self.makeSingularPts(mask, henry='Left Loop')
+            print ls1, ls2, ds1, ds2
             ls = [ls1, ls2]
             ds = [ds1, ds2]
 
         else:
             assert false, 'Invalid Fingerprint Type'
         
-        ls = np.array(ls)
-        ds = np.array(ds)
+        #this return is complicated, if it's anything but Whorl, need to wrap it up in extra list braces on return
+        #All need to be converted to np.array outside this function because of recursion in the Whorl function
         return(ls, ds)
 
-  def makeOrientationMap(self,ls,ds,mask,type=None):
+  def makeOrientationMap(self,ls,ds,mask,henry=None):
         """
         Generates an orientation map based on the Henry class of fingerprint
         """
@@ -206,12 +249,12 @@ class SynFinger:
     
     a_axis = np.linspace(-math.pi, math.pi, num =9, endpoint = True)
     gA = np.linspace(-math.pi, math.pi, num = 9, endpoint = True)
-    #type = 'Right Loop'
-    #if type == 'Right Loop':          
+    #henry = 'Right Loop'
+    #if henry == 'Right Loop':          
       #gA[4] -= math.pi/3.0
       #gA[3] -= math.pi*2.0/9.0
       #gA[5] -= math.pi*2.0/9.0
-    #if type == 'Left Loop':
+    #if henry == 'Left Loop':
       #gA[4] += math.pi/3.0
       #gA[3] += math.pi*2.0/9.0
       #gA[5] += math.pi*2.0/9.0
@@ -355,34 +398,9 @@ class SynFinger:
         im.save(filename)
      
 if __name__ == '__main__':
-  SynFinger(size=(640,640),type='Whorl',plotResult=True)
   
-#finger = SynFinger()
-#mask = finger.genMask(100,120,120,110,70,d=0)
-#ls,ds = finger.makeSingularPts(mask, 'Right Loop')
-#orientMap = finger.makeOrientationMap(ls,ds,mask, 'Right Loop')
-#masterImage = finger.gaborFilter(orientMap)
-#threshImage = finger.binarize(masterImage)
-##maskImage = finger.applyMask(threshImage,mask)
-#maskImage = threshImage
-#print np.shape(maskImage)
-
-#finger.makeImage(maskImage, filename='test.tif')
-
-#plt.figure()
-#plt.imshow(maskImage, cmap=cm.gray)
-
-##plt.plot([r[1] for r in ls],[y[0] for y in ls],'o')
-#plt.plot(ls[:,1], ls[:,0],'o')
-#plt.plot(ds[:,1], ds[:,0],'^')
-
-##plt.plot([r[1] for r in ds],[y[0] for y in ds],'^')
-##numRows, numCols = np.shape(orientMap)
-##for r in range(0,numRows,3):
-##    for c in range(0,numCols,3):
-##        plt.plot([c,c+2.0*math.cos(orientMap[r][c])],[r,r+2.0*math.sin(orientMap[r][c])],'g-')
-        
+  synf = SynFinger();
+  retval = synf.make_master(size=(640,640),henry='Tented Arch',plotResult=True,returnValue=True)
 
 
-#plt.show()
 
