@@ -23,12 +23,12 @@ class SynFinger:
   Generates a synthetic finger master image according to the SFINGE method. 
   Additional parameters added to simulate rolled prints.
   Returns dictionary:
-      image: nd-array
+      image: nd-array as list
       size: (row,col) tuple
-      core: nd-array
-      singularpoints: {ls: nd-array, ds: nd-array}
+      core: nd-array as list
+      singularpoints: {ls: nd-array as list, ds: nd-array as list}
       henry: string
-      orientationmap: nd-array
+      orientationmap: nd-array as list
   """
   
   def __init__(self, remoteDebug=False):
@@ -47,7 +47,7 @@ class SynFinger:
     self.image = []
     self.orientationmap = []
     
-  def make_master(self, size=(640,640), henry=None, plotResult=False, fname=None, returnValue=False):
+  def make_master(self, size=(640,640), henry=None, plotResult=False, fname=None, returnValue=True):
     
     self.size = size
     self.henry = henry
@@ -62,9 +62,9 @@ class SynFinger:
     ls = np.array(ls)
     ds = np.array(ds)
     
-    self.singularpoints = {'ls': ls, 'ds': ds}
-    print ls, ds
-    print self.singularpoints
+    self.singularpoints = {'ls': ls.tolist(), 'ds': ds.tolist()}
+    #print ls, ds
+    #print self.singularpoints
     
     #Determine core point as midpoint between two loop singularities or the position of the loop
     if ls.ndim > 1:
@@ -101,8 +101,8 @@ class SynFinger:
       plt.show()
     
     if returnValue:
-      return_dict = {'image': self.image,'size': self.size, 'core': self.core, 'singularpoints': self.singularpoints, 'orientationmap': self.orientationmap, 'henry': self.henry}
-      
+      return_dict = {'image': self.image.tolist(),'size': self.size, 'core': self.core.tolist(), 'singularpoints': self.singularpoints, 'orientationmap': self.orientationmap.tolist(), 'henry': self.henry}
+      return return_dict
     
     
       
@@ -163,6 +163,7 @@ class SynFinger:
         numRows,numCols = np.shape(mask)
         if not henry:
             henry = random.choice(('Left Loop','Right Loop','Whorl','Tented Arch'))
+            self.henry = henry
         
         if henry == 'Arch':
             # Put a loop below mask area FIXME: This doesn't work (maybe some kind of gaussian?)
@@ -295,7 +296,7 @@ class SynFinger:
 
 
         for n in range(1,4000):
-            print n
+            #print n
             # Seed with N initial points, keeping them inside filter overlap boundary 
             # so no edge effects during inital seeding
             filtSize=16
